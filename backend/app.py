@@ -21,6 +21,8 @@ API_HOST = os.getenv('API_HOST', 'https://api.stability.ai')
 ENGINE_ID = "stable-diffusion-v1-6"
 
 
+# ROUTES Definition
+## ROUTE A ---- Generate image
 @app.route("/generate", methods=["POST"])
 def generate_image():
     prompt = request.form.get("prompt")
@@ -54,6 +56,7 @@ def generate_image():
     return send_file(BytesIO(image_bytes), mimetype="image/png")
 
 
+## ROUTE B ---- Erase element from image
 @app.route("/erase", methods=["POST"])
 def erase_image():
     image_file = request.files.get("image")
@@ -96,6 +99,7 @@ def erase_image():
     return send_file(BytesIO(response.content), mimetype="image/png")
 
 
+## ROUTE C ---- Inpaint element in image
 @app.route("/inpaint", methods=["POST"])
 def inpaint_image():
     image_file = request.files.get("image")
