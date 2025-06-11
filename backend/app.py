@@ -1,148 +1,128 @@
-# app.py
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
-from dotenv import load_dotenv
-import os
-import requests
-import base64
-from io import BytesIO
-from PIL import Image
+# backend/app.py
 
-# Load environment variables
+from flask import Flask, request, send_file, jsonify
+from flask_cors import CORS
+import requests
+import os
+from io import BytesIO
+from dotenv import load_dotenv
+
 load_dotenv()
 
-# Flask setup
 app = Flask(__name__)
 CORS(app)
 
-# Stability API setup
+STABILITY_API_HOST = "https://api.stability.ai"
 API_KEY = os.getenv("STABILITY_API_KEY")
-API_HOST = os.getenv('API_HOST', 'https://api.stability.ai')
-ENGINE_ID = "stable-diffusion-v1-6"
+
+if not API_KEY:
+    raise EnvironmentError("Missing STABILITY_API_KEY in environment variables")
 
 
-# ROUTES Definition
-## ROUTE A ---- Generate image
+def fetch_image_from_stability(url, headers, files_or_json):
+    response = requests.post(url, headers=headers, **files_or_json)
+    if response.status_code != 200:
+        return None, response.text
+    return BytesIO(response.content), None
+
+
 @app.route("/generate", methods=["POST"])
 def generate_image():
-    prompt = request.form.get("prompt")
+    data = request.get_json()
+    prompt = data.get("prompt")
     if not prompt:
-        return jsonify({"error": "No prompt provided"}), 400
-    if API_KEY is None:
-        return jsonify({"error": "Missing API key"}), 400
+        return jsonify({"error": "Prompt is required"}), 400
 
     response = requests.post(
-        f"{API_HOST}/v1/generation/{ENGINE_ID}/text-to-image",
+        f"{STABILITY_API_HOST}/v1/generation/stable-diffusion-512-v2-1/text-to-image",
         headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {API_KEY}"
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
         },
         json={
             "text_prompts": [{"text": prompt}],
-            "cfg_scale": 30,
+            "cfg_scale": 7,
+            "clip_guidance_preset": "FAST_BLUE",
             "height": 512,
             "width": 512,
             "samples": 1,
-            "steps": 30
-        }
+            "steps": 30,
+        },
     )
 
     if response.status_code != 200:
         return jsonify({"error": response.text}), response.status_code
 
-    image_base64 = response.json()["artifacts"][0]["base64"]
-    image_bytes = base64.b64decode(image_base64)
-    return send_file(BytesIO(image_bytes), mimetype="image/png")
+    data = response.json()
+    image_data = data["artifacts"][0]["base64"]
+    return send_file(BytesIO(base64.b64decode(image_data)), mimetype="image/png")
 
 
-## ROUTE B ---- Erase element from image
-@app.route("/erase", methods=["POST"])
-def erase_image():
-    image_file = request.files.get("image")
-    prompt = request.form.get("prompt", "")
-
-    if not image_file:
-        return jsonify({"error": "No image provided"}), 400
-    if API_KEY is None:
-        return jsonify({"error": "Missing API key"}), 400
-
-    # Create a dummy white mask (erase everything)
-    image = Image.open(image_file).convert("RGB")
-    mask = Image.new("RGB", image.size, (255, 255, 255))
-
-    img_io = BytesIO()
-    mask_io = BytesIO()
-    image.save(img_io, "PNG")
-    mask.save(mask_io, "PNG")
-    img_io.seek(0)
-    mask_io.seek(0)
-
-    response = requests.post(
-        f"{API_HOST}/v2beta/stable-image/edit/erase",
-        headers={
-            "Authorization": f"Bearer {API_KEY}",
-            "Accept": "image/*"
-        },
-        files={
-            "image": ("image.png", img_io, "image/png"),
-            "mask": ("mask.png", mask_io, "image/png"),
-        },
-        data={
-            "output_format": "png"
-        }
-    )
-
-    if response.status_code != 200:
-        return jsonify({"error": response.text}), response.status_code
-
-    return send_file(BytesIO(response.content), mimetype="image/png")
-
-
-## ROUTE C ---- Inpaint element in image
 @app.route("/inpaint", methods=["POST"])
-def inpaint_image():
-    image_file = request.files.get("image")
-    prompt = request.form.get("prompt", "")
+def inpaint():
+    prompt = request.form.get("prompt")
+    image = request.files.get("image")
+    mask = request.files.get("mask")
 
-    if not image_file or not prompt:
-        return jsonify({"error": "Image and prompt required"}), 400
-    if API_KEY is None:
-        return jsonify({"error": "Missing API key"}), 400
+    if not prompt or not image:
+        return jsonify({"error": "Prompt and image are required"}), 400
 
-    # Dummy mask — in real app, you'd use user input or segmentation
-    image = Image.open(image_file).convert("RGB")
-    mask = Image.new("RGB", image.size, (255, 255, 255))  # mask everything
+    files = {
+        "init_image": (image.filename, image.stream, image.mimetype),
+        "mask_image": (mask.filename, mask.stream, mask.mimetype) if mask else None
+    }
 
-    img_io = BytesIO()
-    mask_io = BytesIO()
-    image.save(img_io, "PNG")
-    mask.save(mask_io, "PNG")
-    img_io.seek(0)
-    mask_io.seek(0)
+    # Clean up None entries from files
+    files = {k: v for k, v in files.items() if v is not None}
 
-    response = requests.post(
-        f"{API_HOST}/v2beta/stable-image/edit/inpaint",
-        headers={
-            "Authorization": f"Bearer {API_KEY}",
-            "Accept": "image/*"
-        },
-        files={
-            "image": ("image.png", img_io, "image/png"),
-            "mask": ("mask.png", mask_io, "image/png"),
-        },
-        data={
-            "prompt": prompt,
-            "output_format": "png"
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+
+    image_data, error = fetch_image_from_stability(
+        f"{STABILITY_API_HOST}/v1/generation/stable-diffusion-512-inpainting/image-to-image",
+        headers,
+        {
+            "files": files,
+            "data": {
+                "text_prompts": prompt,
+                "cfg_scale": 7,
+                "samples": 1,
+                "steps": 30
+            },
         }
     )
 
-    if response.status_code != 200:
-        return jsonify({"error": response.text}), response.status_code
+    if error:
+        return jsonify({"error": error}), 500
 
-    return send_file(BytesIO(response.content), mimetype="image/png")
+    return send_file(image_data, mimetype="image/png")
 
 
-# Run the app
+@app.route("/erase", methods=["POST"])
+def erase():
+    image = request.files.get("image")
+    mask = request.files.get("mask")
+
+    if not image or not mask:
+        return jsonify({"error": "Image and mask are required"}), 400
+
+    files = {
+        "image": (image.filename, image.stream, image.mimetype),
+        "mask": (mask.filename, mask.stream, mask.mimetype)
+    }
+
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+
+    image_data, error = fetch_image_from_stability(
+        f"{STABILITY_API_HOST}/v1/erase",
+        headers,
+        {"files": files}
+    )
+
+    if error:
+        return jsonify({"error": error}), 500
+
+    return send_file(image_data, mimetype="image/png")
+
+
 if __name__ == "__main__":
     app.run(debug=True)
