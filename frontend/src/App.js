@@ -128,7 +128,7 @@ export default function App() {
 
       {/* Generate Section */}
       <section>
-        <h2>Generate Image (SD 1.6)</h2>
+        <h2>Generate Image (SDXL 1.0)</h2>
         <input
           type="text"
           value={generatePrompt}
